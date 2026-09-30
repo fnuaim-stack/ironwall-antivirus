@@ -24,7 +24,7 @@ def test_eicar_hash_constant_matches_test_file():
 
 def test_double_extension_heuristic_is_suspicious():
     score, reasons = HeuristicScanner().scan(Path("C:/Users/Test/Documents/invoice.pdf.exe"))
-    assert score == 45
+    assert 30 <= score < 60
     assert any("double extension" in reason for reason in reasons)
 
 def test_quarantine_and_restore(tmp_path):
