@@ -21,6 +21,10 @@ class Signals(QObject):
     complete = Signal(dict)
 
 
+class ProtectionSignals(QObject):
+    detection = Signal(object)
+
+
 class ScanPage(QWidget):
     def __init__(self, service: ScanService, quarantine: QuarantineManager) -> None:
         super().__init__(); self.service, self.quarantine, self.signals = service, quarantine, Signals(); self.results: list[ScanResult] = []
@@ -42,7 +46,8 @@ class ScanPage(QWidget):
         if path: self._run([Path(path)])
     def add_result(self, result: ScanResult):
         row=self.table.rowCount(); self.table.insertRow(row); self.results.append(result)
-        for col, text in enumerate((result.status.value, result.file_name, result.threat_name or "—", "; ".join(result.reasons) or "—")):
+        display_status = "SKIPPED" if any(reason.startswith("Skipped:") for reason in result.reasons) else result.status.value
+        for col, text in enumerate((display_status, result.file_name, result.threat_name or "—", "; ".join(result.reasons) or "—")):
             self.table.setItem(row,col,QTableWidgetItem(text))
         if result.status in {ScanStatus.DETECTED, ScanStatus.SUSPICIOUS}:
             button=QPushButton("Quarantine"); button.clicked.connect(lambda _, r=result: self._quarantine(r)); self.table.setCellWidget(row,4,button)
@@ -74,17 +79,18 @@ class QuarantinePage(QWidget):
 
 
 class ProtectionPage(QWidget):
-    def __init__(self, engine, database, settings) -> None:
-        super().__init__(); self.engine, self.database, self.settings = engine, database, settings
-        self.file_monitor = FileMonitor(engine, database, self.detected); self.process_monitor = ProcessMonitor(engine, database)
+    def __init__(self, engine, database, settings, config_manager) -> None:
+        super().__init__(); self.engine, self.database, self.settings, self.config_manager = engine, database, settings, config_manager
+        self.signals = ProtectionSignals(); self.signals.detection.connect(self.detected)
+        self.file_monitor = FileMonitor(engine, database, self.signals.detection.emit); self.process_monitor = ProcessMonitor(engine, database)
         layout=QVBoxLayout(self); layout.addWidget(QLabel("<h2>Real-Time Protection</h2>")); self.state=QLabel("Protection disabled")
         layout.addWidget(self.state); self.folders=QLabel("Monitored folders:\n" + "\n".join(settings.monitored_directories or ["No accessible default folders found"]))
         layout.addWidget(self.folders); buttons=QHBoxLayout(); start=QPushButton("Enable Protection"); stop=QPushButton("Disable Protection"); start.clicked.connect(self.start); stop.clicked.connect(self.stop); buttons.addWidget(start); buttons.addWidget(stop); layout.addLayout(buttons); layout.addStretch()
     def start(self):
-        errors=self.file_monitor.start(self.settings.monitored_directories); self.process_monitor.start(); self.settings.realtime_enabled=True
+        errors=self.file_monitor.start(self.settings.monitored_directories); self.process_monitor.start(); self.settings.realtime_enabled=True; self.config_manager.save(self.settings)
         self.state.setText("Protection enabled" + (" — " + "; ".join(errors) if errors else ""))
     def stop(self):
-        self.file_monitor.stop(); self.process_monitor.stop(); self.settings.realtime_enabled=False; self.state.setText("Protection disabled")
+        self.file_monitor.stop(); self.process_monitor.stop(); self.settings.realtime_enabled=False; self.config_manager.save(self.settings); self.state.setText("Protection disabled")
     def detected(self, result):
         self.state.setText(f"Detection: {result.threat_name} in {result.file_name}")
 
@@ -92,10 +98,10 @@ class ProtectionPage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__(); self.setWindowTitle("IronWall Antivirus"); self.resize(1050, 650)
-        settings=ConfigManager().load(); database=Database(); engine=ScanningEngine(settings.maximum_file_size_mb, settings.heuristics_enabled, settings.yara_enabled); quarantine=QuarantineManager(database, Path(settings.quarantine_location))
+        config_manager=ConfigManager(); settings=config_manager.load(); database=Database(); engine=ScanningEngine(settings.maximum_file_size_mb, settings.heuristics_enabled, settings.yara_enabled); quarantine=QuarantineManager(database, Path(settings.quarantine_location))
         pages=QStackedWidget(); scan=ScanPage(ScanService(engine,database),quarantine)
         dashboard=QWidget(); d=QVBoxLayout(dashboard); d.addWidget(QLabel("<h1>IronWall Antivirus</h1><h3>Protection status: local monitoring available</h3><p>Educational endpoint monitoring. It complements, not replaces, Windows Defender.</p>")); quick=QPushButton("Start Quick Scan"); quick.clicked.connect(lambda: pages.setCurrentWidget(scan)); d.addWidget(quick); d.addStretch()
-        protection=ProtectionPage(engine, database, settings)
+        protection=ProtectionPage(engine, database, settings, config_manager)
         settings_page=QWidget(); s=QVBoxLayout(settings_page); s.addWidget(QLabel("<h2>Settings</h2><p>Settings are stored under your local IronWall application-data folder.</p>")); s.addStretch()
         items=[("Dashboard",dashboard),("Scan",scan),("Real-Time Protection",protection),("Quarantine",QuarantinePage(quarantine,database)),("Security Events",EventsPage(database)),("Settings",settings_page)]
         sidebar=QListWidget(); sidebar.addItems([x[0] for x in items]); [pages.addWidget(x[1]) for x in items]; sidebar.currentRowChanged.connect(pages.setCurrentIndex); sidebar.setCurrentRow(0)

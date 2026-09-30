@@ -24,7 +24,12 @@ class QuarantineManager:
         digest = result.sha256 or sha256_file(source)
         shutil.move(str(source), str(destination))
         entry = {"id": entry_id, "created_at": datetime.now(timezone.utc).isoformat(), "original_path": str(source), "quarantine_path": str(destination), "threat_name": result.threat_name or "Suspicious file", "sha256": digest, "file_size": result.file_size, "reason": "; ".join(result.reasons)}
-        self.database.add_quarantine(entry)
+        try:
+            self.database.add_quarantine(entry)
+        except Exception:
+            if destination.exists() and not source.exists():
+                shutil.move(str(destination), str(source))
+            raise
         self.database.add_event(SecurityEvent(EventType.FILE_QUARANTINED, "High", "quarantine", f"Quarantined {source.name}", str(source), entry["reason"]))
         return entry
 
