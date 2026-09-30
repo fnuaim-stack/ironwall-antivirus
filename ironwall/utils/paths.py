@@ -7,12 +7,19 @@ from pathlib import Path
 
 def app_data_dir() -> Path:
     """Return a persistent per-user directory, including from PyInstaller."""
+    override = os.environ.get("IRONWALL_DATA_DIR")
+    if override:
+        path = Path(override)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
     root = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
     base = Path(root) if root else Path.home() / ".local" / "share"
     path = base / "IronWall"
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError:
+        if os.name == "nt":
+            raise
         # Useful for locked-down test runners; Windows uses LOCALAPPDATA above.
         path = Path(tempfile.gettempdir()) / "IronWall"
         path.mkdir(parents=True, exist_ok=True)

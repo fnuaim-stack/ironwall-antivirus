@@ -19,6 +19,7 @@ class EventType(str, Enum):
     THREAT_DETECTED = "THREAT_DETECTED"
     FILE_QUARANTINED = "FILE_QUARANTINED"
     FILE_RESTORED = "FILE_RESTORED"
+    FILE_DELETED = "FILE_DELETED"
     REALTIME_DETECTION = "REALTIME_DETECTION"
     PROCESS_STARTED = "PROCESS_STARTED"
     PROCESS_DETECTION = "PROCESS_DETECTION"
@@ -39,7 +40,10 @@ class ScanResult:
     severity: str = "Info"
     reasons: list[str] = field(default_factory=list)
     scanners: list[str] = field(default_factory=list)
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    metadata: dict[str, Any] = field(default_factory=dict)
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     duration_ms: float = 0.0
 
     def __post_init__(self) -> None:
@@ -60,4 +64,6 @@ class SecurityEvent:
     message: str
     subject: str | None = None
     details: str | None = None
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )

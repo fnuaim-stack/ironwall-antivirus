@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import threading
 import time
+from collections import OrderedDict
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ironwall.core.models import ScanResult, ScanStatus
+
 from .hash_scanner import HashScanner, sha256_file
 from .heuristic_scanner import HeuristicScanner
 from .pe_scanner import PEScanner
@@ -11,37 +16,175 @@ from .yara_scanner import YaraScanner
 
 
 class ScanningEngine:
-    def __init__(self, maximum_size_mb: int = 100, heuristics_enabled: bool = True, yara_enabled: bool = True) -> None:
+    def __init__(
+        self,
+        maximum_size_mb: int = 100,
+        heuristics_enabled: bool = True,
+        yara_enabled: bool = True,
+        cache_size: int = 512,
+    ) -> None:
         self.maximum_bytes = maximum_size_mb * 1024 * 1024
         self.heuristics_enabled, self.yara_enabled = heuristics_enabled, yara_enabled
-        self.hash_scanner, self.heuristic, self.pe, self.yara = HashScanner(), HeuristicScanner(), PEScanner(), YaraScanner()
+        self.hash_scanner, self.heuristic, self.pe, self.yara = (
+            HashScanner(),
+            HeuristicScanner(),
+            PEScanner(),
+            YaraScanner(),
+        )
+        self.cache_size = max(0, cache_size)
+        self._cache: OrderedDict[tuple[str, int, int, int], ScanResult] = OrderedDict()
+        self._cache_lock = threading.RLock()
 
     def scan_file(self, file_path: str | Path) -> ScanResult:
         started, path = time.perf_counter(), Path(file_path)
         try:
             stat = path.stat()
-            if not path.is_file(): raise ValueError("Path is not a regular file")
+            if not path.is_file():
+                raise ValueError("Path is not a regular file")
             if stat.st_size > self.maximum_bytes:
-                return self._result(path, ScanStatus.CLEAN, stat.st_size, reasons=["Skipped: file exceeds configured size limit"], duration=started)
+                return self._result(
+                    path,
+                    ScanStatus.ERROR,
+                    stat.st_size,
+                    severity="Info",
+                    reasons=[
+                        "File was not scanned because it exceeds the configured size limit"
+                    ],
+                    duration=started,
+                )
+            try:
+                rules_mtime = self.hash_scanner.database_path.stat().st_mtime_ns
+            except OSError:
+                rules_mtime = -1
+            cache_key = (
+                str(path.resolve()),
+                stat.st_size,
+                stat.st_mtime_ns,
+                rules_mtime,
+            )
+            with self._cache_lock:
+                cached = self._cache.get(cache_key)
+                if cached is not None:
+                    self._cache.move_to_end(cache_key)
+                    return replace(
+                        cached,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        duration_ms=(time.perf_counter() - started) * 1000,
+                    )
             digest = sha256_file(path)
             hash_match = self.hash_scanner.scan(path, digest)
             if hash_match:
-                return self._result(path, ScanStatus.DETECTED, stat.st_size, digest, hash_match["threat_name"], hash_match.get("severity", "High"), [hash_match.get("description", "Matched local threat hash")], ["hash"], started)
+                result = self._result(
+                    path,
+                    ScanStatus.DETECTED,
+                    stat.st_size,
+                    digest,
+                    hash_match["threat_name"],
+                    hash_match.get("severity", "High"),
+                    [hash_match.get("description", "Matched local threat hash")],
+                    ["hash"],
+                    started,
+                )
+                return self._remember(cache_key, result)
             score, reasons, scanners = 0, [], []
             if self.heuristics_enabled:
-                points, notes = self.heuristic.scan(path); score += points; reasons += notes
-                if notes: scanners.append("heuristic")
-            pe_score, pe_notes, _ = self.pe.scan(path); score += pe_score; reasons += pe_notes
-            if pe_notes: scanners.append("pe")
+                points, notes = self.heuristic.scan(path)
+                score += points
+                reasons += notes
+                if notes:
+                    scanners.append("heuristic")
+            pe_score, pe_notes, pe_details = self.pe.scan(path)
+            score += pe_score
+            reasons += pe_notes
+            if pe_details and pe_details.get("provider") != "unavailable":
+                scanners.append("pe")
             if self.yara_enabled:
                 matches = self.yara.scan(path)
                 if matches:
-                    return self._result(path, ScanStatus.DETECTED, stat.st_size, digest, matches[0]["rule"], "High", [f"YARA rule matched: {m['rule']}" for m in matches], ["yara"], started)
-            status = ScanStatus.DETECTED if score >= 60 else ScanStatus.SUSPICIOUS if score >= 30 else ScanStatus.CLEAN
-            return self._result(path, status, stat.st_size, digest, "Heuristic.HighRisk" if status == ScanStatus.DETECTED else None, "High" if status == ScanStatus.DETECTED else "Medium" if status == ScanStatus.SUSPICIOUS else "Info", reasons, scanners, started)
-        except Exception as exc:
-            return ScanResult(path=str(path), status=ScanStatus.ERROR, reasons=[str(exc)], severity="Error", duration_ms=(time.perf_counter()-started)*1000)
+                    result = self._result(
+                        path,
+                        ScanStatus.DETECTED,
+                        stat.st_size,
+                        digest,
+                        matches[0]["rule"],
+                        "High",
+                        [f"YARA rule matched: {m['rule']}" for m in matches],
+                        ["yara"],
+                        started,
+                        {"yara_matches": matches, "pe": pe_details},
+                    )
+                    return self._remember(cache_key, result)
+            status = (
+                ScanStatus.DETECTED
+                if score >= 60
+                else ScanStatus.SUSPICIOUS
+                if score >= 30
+                else ScanStatus.CLEAN
+            )
+            result = self._result(
+                path,
+                status,
+                stat.st_size,
+                digest,
+                "Heuristic.HighRisk" if status == ScanStatus.DETECTED else None,
+                "High"
+                if status == ScanStatus.DETECTED
+                else "Medium"
+                if status == ScanStatus.SUSPICIOUS
+                else "Info",
+                reasons,
+                scanners,
+                started,
+                {"heuristic_score": score, "pe": pe_details},
+            )
+            return self._remember(cache_key, result)
+        except Exception as exc:  # noqa: BLE001 - scanner boundary must return ERROR
+            return ScanResult(
+                path=str(path),
+                status=ScanStatus.ERROR,
+                reasons=[str(exc)],
+                severity="Error",
+                duration_ms=(time.perf_counter() - started) * 1000,
+            )
+
+    def _remember(
+        self, key: tuple[str, int, int, int], result: ScanResult
+    ) -> ScanResult:
+        with self._cache_lock:
+            if self.cache_size:
+                self._cache[key] = result
+                self._cache.move_to_end(key)
+                while len(self._cache) > self.cache_size:
+                    self._cache.popitem(last=False)
+        return result
+
+    def clear_cache(self) -> None:
+        with self._cache_lock:
+            self._cache.clear()
 
     @staticmethod
-    def _result(path, status, size, digest=None, threat=None, severity="Info", reasons=None, scanners=None, duration=0.0):
-        return ScanResult(path=str(path), status=status, file_size=size, sha256=digest, threat_name=threat, severity=severity, reasons=reasons or [], scanners=scanners or [], file_type=path.suffix.lower() or "unknown", duration_ms=(time.perf_counter()-duration)*1000)
+    def _result(
+        path,
+        status,
+        size,
+        digest=None,
+        threat=None,
+        severity="Info",
+        reasons=None,
+        scanners=None,
+        duration=0.0,
+        metadata=None,
+    ):
+        return ScanResult(
+            path=str(path),
+            status=status,
+            file_size=size,
+            sha256=digest,
+            threat_name=threat,
+            severity=severity,
+            reasons=reasons or [],
+            scanners=scanners or [],
+            metadata=metadata or {},
+            file_type=path.suffix.lower() or "unknown",
+            duration_ms=(time.perf_counter() - duration) * 1000,
+        )

@@ -1,0 +1,2 @@
+# Optional local rule provider. IronWall runs normally if this wheel is unavailable.
+yara-python>=4.5

@@ -9,4 +9,7 @@ jobs:
         with: {python-version: '3.11'}
       - run: python -m pip install -r requirements.txt
       - run: python -m compileall ironwall
+      - run: python -m ruff check ironwall tests
       - run: python -m pytest tests -q
+        env:
+          QT_QPA_PLATFORM: offscreen
