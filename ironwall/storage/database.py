@@ -53,9 +53,11 @@ class Database:
         with self._connect() as c:
             return {"detections": int(c.execute("SELECT COUNT(*) FROM detections").fetchone()[0]), "quarantined": int(c.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0])}
 
-    def events(self, event_type: str | None = None, limit: int = 200) -> list[dict]:
-        query = "SELECT * FROM events" + (" WHERE event_type=?" if event_type else "") + " ORDER BY id DESC LIMIT ?"
-        args: tuple = (event_type, limit) if event_type else (limit,)
+    def events(self, event_types: str | tuple[str, ...] | None = None, limit: int = 200) -> list[dict]:
+        if isinstance(event_types, str): event_types = (event_types,)
+        where = " WHERE event_type IN (" + ",".join("?" for _ in event_types) + ")" if event_types else ""
+        query = "SELECT * FROM events" + where + " ORDER BY id DESC LIMIT ?"
+        args: tuple = (*event_types, limit) if event_types else (limit,)
         with self._connect() as c:
             return [dict(row) for row in c.execute(query, args)]
 

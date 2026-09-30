@@ -12,8 +12,8 @@ from ironwall.storage.database import Database
 
 
 class ScanService:
-    def __init__(self, engine: ScanningEngine, database: Database) -> None:
-        self.engine, self.database, self.stop_requested = engine, database, threading.Event()
+    def __init__(self, engine: ScanningEngine, database: Database, scan_temporary_files: bool = True) -> None:
+        self.engine, self.database, self.scan_temporary_files, self.stop_requested = engine, database, scan_temporary_files, threading.Event()
 
     def scan_paths(self, paths: Iterable[Path], on_result: Callable[[ScanResult], None] | None = None) -> dict:
         self.stop_requested.clear(); started = time.monotonic(); totals = {"files_scanned": 0, "detections": 0, "suspicious": 0, "errors": 0}
@@ -41,7 +41,7 @@ class ScanService:
 
     def stop(self) -> None: self.stop_requested.set()
 
-    @staticmethod
-    def quick_scan_paths() -> list[Path]:
+    def quick_scan_paths(self) -> list[Path]:
         home = Path.home(); candidates = [home / "Downloads", home / "Desktop", home / "Documents", Path(__import__("tempfile").gettempdir())]
+        if not self.scan_temporary_files: candidates.pop()
         return [p for p in candidates if p.exists()]

@@ -92,9 +92,10 @@ class QuarantinePage(QWidget):
     def refresh(self):
         entries=self.database.quarantine_entries(); self.table.setRowCount(len(entries))
         for row,e in enumerate(entries):
-            for col,key in enumerate(("created_at","id","threat_name","original_path","sha256")): self.table.setItem(row,col,QTableWidgetItem(str(e[key])))
+            values=(e["created_at"],Path(e["original_path"]).name,e["threat_name"],e["original_path"],e["sha256"])
+            for col,value in enumerate(values): self.table.setItem(row,col,QTableWidgetItem(str(value)))
             actions=QWidget(); layout=QHBoxLayout(actions); layout.setContentsMargins(0,0,0,0)
-            for name,callback in (("Restore",lambda _,x=e["id"]:self.restore(x)),("Delete",lambda _,x=e["id"]:self.delete(x))): button=QPushButton(name); button.clicked.connect(callback); layout.addWidget(button)
+            for name,callback in (("Details",lambda _,x=e:self.details(x)),("Restore",lambda _,x=e["id"]:self.restore(x)),("Delete",lambda _,x=e["id"]:self.delete(x))): button=QPushButton(name); button.clicked.connect(callback); layout.addWidget(button)
             self.table.setCellWidget(row,5,actions)
     def restore(self,entry_id):
         try: self.manager.restore(entry_id); self.refresh()
@@ -108,13 +109,14 @@ class QuarantinePage(QWidget):
         if QMessageBox.question(self,"Permanently delete","Permanently delete this quarantined file?") == QMessageBox.Yes:
             try: self.manager.delete(entry_id); self.refresh()
             except Exception as exc: QMessageBox.warning(self,"IronWall",str(exc))
+    def details(self, entry): QMessageBox.information(self,"Quarantine details",f"Threat: {entry['threat_name']}\nHash: {entry['sha256']}\nReason: {entry['reason']}")
 
 
 class EventsPage(QWidget):
     def __init__(self,database:Database) -> None:
         super().__init__(); self.database=database; layout=QVBoxLayout(self); self.filter=QListWidget(); self.filter.addItems(["All","Detection","Scanning","Monitoring","Process","Quarantine","Errors"]); self.filter.setMaximumHeight(80); layout.addWidget(self.filter); self.table=QTableWidget(0,5); self.table.setHorizontalHeaderLabels(["Time","Type","Severity","Message","Subject"]); layout.addWidget(self.table); self.filter.currentTextChanged.connect(self.refresh); self.filter.setCurrentRow(0); self.refresh()
     def refresh(self,*_):
-        choices={"Detection":"THREAT_DETECTED","Scanning":"FILE_SCANNED","Monitoring":"REALTIME_DETECTION","Process":"PROCESS_STARTED","Quarantine":"FILE_QUARANTINED","Errors":"ERROR"}; rows=self.database.events(choices.get(self.filter.currentItem().text()) if self.filter.currentItem() else None)
+        choices={"Detection":("THREAT_DETECTED","PROCESS_DETECTION"),"Scanning":("SCAN_STARTED","SCAN_COMPLETED","FILE_SCANNED"),"Monitoring":("REALTIME_DETECTION",),"Process":("PROCESS_STARTED","PROCESS_DETECTION"),"Quarantine":("FILE_QUARANTINED","FILE_RESTORED"),"Errors":("ERROR",)}; rows=self.database.events(choices.get(self.filter.currentItem().text()) if self.filter.currentItem() else None)
         self.table.setRowCount(len(rows))
         for row,event in enumerate(rows):
             for col,key in enumerate(("timestamp","event_type","severity","message","subject")): self.table.setItem(row,col,QTableWidgetItem(str(event.get(key) or "")))
@@ -132,8 +134,9 @@ class SettingsPage(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__(); self.setWindowTitle("IronWall Antivirus"); self.resize(1100,700); self.config=ConfigManager(); self.settings=self.config.load(); self.database=Database(); self.engine=ScanningEngine(self.settings.maximum_file_size_mb,self.settings.heuristics_enabled,self.settings.yara_enabled); self.quarantine=QuarantineManager(self.database,Path(self.settings.quarantine_location))
-        pages=QStackedWidget(); scan=ScanPage(ScanService(self.engine,self.database),self.quarantine); dashboard=DashboardPage(self.database,lambda:pages.setCurrentWidget(scan)); entries=[("Dashboard",dashboard),("Scan",scan),("Real-Time Protection",ProtectionPage(self.engine,self.database,self.settings,lambda:self.config.save(self.settings))),("Quarantine",QuarantinePage(self.quarantine,self.database)),("Security Events",EventsPage(self.database)),("Settings",SettingsPage(self.settings,lambda:self.config.save(self.settings)))]
+        pages=QStackedWidget(); scan=ScanPage(ScanService(self.engine,self.database,self.settings.scan_temporary_files),self.quarantine); dashboard=DashboardPage(self.database,lambda:pages.setCurrentWidget(scan)); protection=ProtectionPage(self.engine,self.database,self.settings,lambda:self.config.save(self.settings)); entries=[("Dashboard",dashboard),("Scan",scan),("Real-Time Protection",protection),("Quarantine",QuarantinePage(self.quarantine,self.database)),("Security Events",EventsPage(self.database)),("Settings",SettingsPage(self.settings,lambda:self.config.save(self.settings)))]
         sidebar=QListWidget(); sidebar.addItems([name for name,_ in entries]); [pages.addWidget(page) for _,page in entries]; sidebar.currentRowChanged.connect(pages.setCurrentIndex); sidebar.setCurrentRow(0); root=QWidget(); layout=QHBoxLayout(root); layout.addWidget(sidebar,1); layout.addWidget(pages,5); self.setCentralWidget(root)
+        if self.settings.realtime_enabled: protection.start()
 
 def run() -> int:
     app=QApplication.instance() or QApplication([]); window=MainWindow(); window.show(); return app.exec()
