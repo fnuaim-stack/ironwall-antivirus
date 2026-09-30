@@ -22,6 +22,8 @@ class ProcessMonitor:
                 self.database.add_event(SecurityEvent(EventType.PROCESS_STARTED, "Info", "process", f"Process started: {info.get('name')}", exe, str(info)))
                 if exe:
                     result = self.engine.scan_file(exe)
-                    if result.status == ScanStatus.DETECTED: self.database.add_event(SecurityEvent(EventType.PROCESS_DETECTION, result.severity, "process", f"Detected process executable: {result.threat_name}", exe, "; ".join(result.reasons)))
+                    if result.status == ScanStatus.DETECTED:
+                        self.database.add_detection(result, "process")
+                        self.database.add_event(SecurityEvent(EventType.PROCESS_DETECTION, result.severity, "process", f"Detected process executable: {result.threat_name}", exe, "; ".join(result.reasons)))
             self._stop.wait(self.interval)
     def stop(self) -> None: self._stop.set()

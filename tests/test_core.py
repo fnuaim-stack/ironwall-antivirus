@@ -4,6 +4,7 @@ from ironwall.core.config import ConfigManager, Settings
 from ironwall.core.models import ScanResult, ScanStatus
 from ironwall.detection.scanner import ScanningEngine
 from ironwall.quarantine.manager import QuarantineManager
+from ironwall.services.scan_service import ScanService
 from ironwall.storage.database import Database
 
 EICAR = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
@@ -29,3 +30,12 @@ def test_config_round_trip(tmp_path):
     manager = ConfigManager(tmp_path / "settings.json")
     manager.save(Settings(maximum_file_size_mb=42, monitored_directories=["C:/Test"]))
     assert manager.load().maximum_file_size_mb == 42
+
+def test_scan_service_persists_session_detection_and_events(tmp_path):
+    sample = tmp_path / "eicar.com"; sample.write_bytes(EICAR)
+    database = Database(tmp_path / "database.sqlite")
+    totals = ScanService(ScanningEngine(), database).scan_paths([sample])
+    assert totals["detections"] == 1
+    assert database.last_scan()["files_scanned"] == 1
+    assert database.dashboard_counts()["detections"] == 1
+    assert any(event["event_type"] == "THREAT_DETECTED" for event in database.events())

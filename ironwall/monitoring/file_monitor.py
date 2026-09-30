@@ -37,6 +37,7 @@ class FileMonitor:
     def _scan(self, value: str) -> None:
         self.pending.pop(value, None); result = self.engine.scan_file(value)
         if result.status == ScanStatus.DETECTED:
+            self.database.add_detection(result, "realtime")
             self.database.add_event(SecurityEvent(EventType.REALTIME_DETECTION, result.severity, "realtime", f"Threat detected: {result.threat_name}", result.path, "; ".join(result.reasons)))
             if self.on_detection: self.on_detection(result)
 

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
-from typing import Iterable
+from typing import Any
 
 from ironwall.core.models import SecurityEvent
 from ironwall.utils.paths import app_data_dir
@@ -32,6 +31,27 @@ class Database:
     def add_event(self, event: SecurityEvent) -> None:
         with self._connect() as c:
             c.execute("INSERT INTO events(timestamp,event_type,severity,source,subject,message,details) VALUES(?,?,?,?,?,?,?)", (event.timestamp, event.event_type.value, event.severity, event.source, event.subject, event.message, event.details))
+
+    def start_scan_session(self, started_at: str) -> int:
+        with self._connect() as c:
+            return int(c.execute("INSERT INTO scan_sessions(started_at,files_scanned,detections,suspicious,errors) VALUES(?,?,?,?,?)", (started_at, 0, 0, 0, 0)).lastrowid)
+
+    def complete_scan_session(self, session_id: int, completed_at: str, totals: dict[str, Any]) -> None:
+        with self._connect() as c:
+            c.execute("UPDATE scan_sessions SET completed_at=?,files_scanned=?,detections=?,suspicious=?,errors=? WHERE id=?", (completed_at, totals["files_scanned"], totals["detections"], totals["suspicious"], totals["errors"], session_id))
+
+    def last_scan(self) -> dict | None:
+        with self._connect() as c:
+            row = c.execute("SELECT * FROM scan_sessions WHERE completed_at IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+            return dict(row) if row else None
+
+    def add_detection(self, result, source: str) -> None:
+        with self._connect() as c:
+            c.execute("INSERT INTO detections(timestamp,path,sha256,threat_name,severity,reasons,source) VALUES(?,?,?,?,?,?,?)", (result.timestamp, result.path, result.sha256, result.threat_name, result.severity, "; ".join(result.reasons), source))
+
+    def dashboard_counts(self) -> dict[str, int]:
+        with self._connect() as c:
+            return {"detections": int(c.execute("SELECT COUNT(*) FROM detections").fetchone()[0]), "quarantined": int(c.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0])}
 
     def events(self, event_type: str | None = None, limit: int = 200) -> list[dict]:
         query = "SELECT * FROM events" + (" WHERE event_type=?" if event_type else "") + " ORDER BY id DESC LIMIT ?"
