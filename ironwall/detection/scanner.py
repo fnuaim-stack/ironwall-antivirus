@@ -101,14 +101,25 @@ class ScanningEngine:
             if self.yara_enabled:
                 matches = self.yara.scan(path)
                 if matches:
+                    primary = matches[0]
+                    meta = primary.get("meta", {})
+                    threat_name = str(meta.get("threat_name") or primary["rule"])
+                    severity = str(meta.get("severity") or "High")
+                    reasons = []
+                    for match in matches:
+                        matched_strings = ", ".join(match.get("strings", []))
+                        detail = f"YARA rule matched: {match['rule']}"
+                        if matched_strings:
+                            detail += f" ({matched_strings})"
+                        reasons.append(detail)
                     result = self._result(
                         path,
                         ScanStatus.DETECTED,
                         stat.st_size,
                         digest,
-                        matches[0]["rule"],
-                        "High",
-                        [f"YARA rule matched: {m['rule']}" for m in matches],
+                        threat_name,
+                        severity,
+                        reasons,
                         ["yara"],
                         started,
                         {"yara_matches": matches, "pe": pe_details},

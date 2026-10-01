@@ -4,7 +4,7 @@ IronWall Antivirus is an educational Windows-focused antivirus and endpoint-moni
 
 ## Features
 
-- SHA-256 local rule scanning and standard EICAR test-file recognition
+- SHA-256 local rule scanning, standard EICAR recognition, and published WannaCry sample hashes
 - Explainable double-extension, temporary-directory, startup-script, and PE static heuristics
 - Optional YARA provider and static PE metadata/heuristics
 - On-demand quick, folder, and single-file scans in a background thread
@@ -23,12 +23,15 @@ py -m pip install -r requirements-yara.txt
 py -m ironwall.main
 ```
 
+Alternatively, run `scripts\setup_windows.ps1 -Launch` to create a virtual environment, install dependencies, and start IronWall.
+
 User data, logs, settings, and quarantine files are stored in `%LOCALAPPDATA%\IronWall`.
 
 ## Build
 
 Run `scripts\build_windows.ps1`. The committed PyInstaller spec produces `dist\IronWall-Antivirus.exe`.
 The build script also runs a non-interactive startup smoke test against the packaged executable.
+Successful GitHub Actions runs publish the EXE as the `IronWall-Antivirus-Windows` artifact for 14 days.
 
 ## Tests
 
@@ -36,8 +39,8 @@ The build script also runs a non-interactive startup smoke test against the pack
 py -m pytest tests -q
 ```
 
-YARA is optional at runtime. If `yara-python` cannot be installed, IronWall continues with hash, heuristic, and PE scanning and reports YARA as unavailable in Settings.
+YARA is optional at runtime. If `yara-python` cannot be installed, IronWall continues with hash, heuristic, and PE scanning and reports YARA as unavailable in Settings. The local database detects the listed exact WannaCry samples by SHA-256, and the conservative YARA rule can detect related files carrying several known static indicators. This is useful portfolio-grade protection, not a guarantee against every WannaCry variant or malware family.
 
 ## Testing in Windows Sandbox
 
-See [sandbox/README.md](sandbox/README.md) for a safe EICAR-based testing checklist. Do not use live malware.
+See [sandbox/README.md](sandbox/README.md) for an isolated, repeatable checklist using EICAR and a harmless WannaCry signature fixture. Do not use live malware or disable Windows Defender.
