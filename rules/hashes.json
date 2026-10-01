@@ -1,10 +1,26 @@
 {
+  "version": 2,
+  "updated_at": "2026-10-01",
   "hashes": [
     {
       "hash": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
       "threat_name": "EICAR-Test-File",
       "severity": "Test/High",
       "description": "Harmless standard antivirus test file."
+    },
+    {
+      "hash": "ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa",
+      "threat_name": "Ransom.Win32.WannaCry",
+      "severity": "Critical",
+      "description": "SHA-256 matches a published WannaCry ransomware sample.",
+      "source": "https://github.com/Neo23x0/signature-base/blob/master/yara/crime_wannacry.yar"
+    },
+    {
+      "hash": "24d004a104d4d54034dbcffc2a4b19a11f39008a575aa614ea04703480b1022c",
+      "threat_name": "Ransom.Win32.WannaCry.Dropper",
+      "severity": "Critical",
+      "description": "SHA-256 matches a published WannaCry dropper sample.",
+      "source": "https://github.com/m-sec-org/d-eyes/blob/master/yaraRules/Ransom.Wannacrypt.yar"
     }
   ]
 }

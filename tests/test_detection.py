@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from ironwall.core.models import ScanStatus
 from ironwall.detection.hash_scanner import (
     EICAR_MARKER,
@@ -10,6 +12,13 @@ from ironwall.detection.hash_scanner import (
     sha256_file,
 )
 from ironwall.detection.scanner import ScanningEngine
+from ironwall.detection.yara_scanner import YaraScanner
+from ironwall.utils.paths import rules_dir
+
+WANNACRY_SHA256 = {
+    "ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa",
+    "24d004a104d4d54034dbcffc2a4b19a11f39008a575aa614ea04703480b1022c",
+}
 
 
 def test_eicar_can_span_streaming_chunks(tmp_path: Path) -> None:
@@ -71,3 +80,57 @@ def test_scan_result_contains_explainable_score(tmp_path: Path) -> None:
     assert result.status in {ScanStatus.SUSPICIOUS, ScanStatus.DETECTED}
     assert result.metadata["heuristic_score"] >= 30
     assert any("double extension" in reason for reason in result.reasons)
+
+
+def test_published_wannacry_hashes_are_in_local_database() -> None:
+    data = json.loads((rules_dir() / "hashes.json").read_text(encoding="utf-8"))
+    entries = {entry["hash"]: entry for entry in data["hashes"]}
+    assert WANNACRY_SHA256 <= entries.keys()
+    assert all(entries[digest]["severity"] == "Critical" for digest in WANNACRY_SHA256)
+    assert all("source" in entries[digest] for digest in WANNACRY_SHA256)
+
+
+def test_wannacry_yara_rule_matches_only_combined_safe_indicators(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("yara")
+    scanner = YaraScanner(rules_dir() / "yara")
+    sample = tmp_path / "harmless-wannacry-fixture.bin"
+    sample.write_bytes(
+        b"MZ\x00safe-test-only\x00@WanaDecryptor@.exe\x00.WNCRY\x00"
+        b"Ooops, your files have been encrypted!\x00"
+    )
+    weak_sample = tmp_path / "single-indicator.bin"
+    weak_sample.write_bytes(b"MZ\x00.WNCRY\x00")
+
+    matches = scanner.scan(sample)
+    assert scanner.available
+    assert any(match["rule"] == "IronWall_Ransomware_WannaCry" for match in matches)
+    assert scanner.scan(weak_sample) == []
+
+
+def test_engine_uses_yara_threat_metadata(tmp_path: Path, monkeypatch) -> None:
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"harmless")
+    engine = ScanningEngine()
+    monkeypatch.setattr(
+        engine.yara,
+        "scan",
+        lambda _path: [
+            {
+                "rule": "Test_Rule",
+                "tags": [],
+                "meta": {
+                    "threat_name": "Ransom.Win32.Test",
+                    "severity": "Critical",
+                },
+                "strings": ["$one", "$two"],
+            }
+        ],
+    )
+
+    result = engine.scan_file(sample)
+    assert result.status is ScanStatus.DETECTED
+    assert result.threat_name == "Ransom.Win32.Test"
+    assert result.severity == "Critical"
+    assert "$one" in result.reasons[0]
