@@ -56,7 +56,8 @@ class QuarantineManager:
         try:
             self.database.add_quarantine(entry)
         except Exception:
-            shutil.move(str(destination), str(source))
+            if destination.exists() and not source.exists():
+                shutil.move(str(destination), str(source))
             raise
         self.database.add_event(
             SecurityEvent(

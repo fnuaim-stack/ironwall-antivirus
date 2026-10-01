@@ -1,7 +1,12 @@
+import hashlib
 from pathlib import Path
+
+import pytest
 
 from ironwall.core.config import ConfigManager, Settings
 from ironwall.core.models import ScanResult, ScanStatus
+from ironwall.detection.hash_scanner import EICAR_SHA256
+from ironwall.detection.heuristic_scanner import HeuristicScanner
 from ironwall.detection.scanner import ScanningEngine
 from ironwall.quarantine.manager import QuarantineManager
 from ironwall.services.scan_service import ScanService
@@ -19,6 +24,10 @@ def test_eicar_is_detected(tmp_path):
     )
 
 
+def test_eicar_hash_constant_matches_test_file():
+    assert hashlib.sha256(EICAR).hexdigest() == EICAR_SHA256
+
+
 def test_double_extension_is_suspicious(tmp_path):
     sample = tmp_path / "invoice.pdf.exe"
     sample.write_bytes(b"not a portable executable")
@@ -27,6 +36,14 @@ def test_double_extension_is_suspicious(tmp_path):
         result.status is ScanStatus.SUSPICIOUS
         and "double extension" in result.reasons[0]
     )
+
+
+def test_double_extension_heuristic_is_suspicious():
+    score, reasons = HeuristicScanner().scan(
+        Path("C:/Users/Test/Documents/invoice.pdf.exe")
+    )
+    assert 30 <= score < 60
+    assert any("double extension" in reason for reason in reasons)
 
 
 def test_quarantine_and_restore(tmp_path):
@@ -48,6 +65,31 @@ def test_quarantine_and_restore(tmp_path):
         manager.restore(entry["id"]) == source.resolve()
         and source.read_text() == "safe"
     )
+
+
+def test_quarantine_rolls_back_if_database_write_fails(tmp_path, monkeypatch):
+    source = tmp_path / "sample.txt"
+    source.write_text("safe")
+    database = Database(tmp_path / "database.sqlite")
+    manager = QuarantineManager(database, tmp_path / "quarantine")
+
+    def fail_write(_entry):
+        raise RuntimeError("database write failed")
+
+    monkeypatch.setattr(database, "add_quarantine", fail_write)
+    with pytest.raises(RuntimeError, match="database write failed"):
+        manager.quarantine(
+            ScanResult(
+                path=str(source),
+                status=ScanStatus.DETECTED,
+                file_size=4,
+                threat_name="Test",
+                reasons=["test"],
+            )
+        )
+
+    assert source.exists()
+    assert not any((tmp_path / "quarantine").iterdir())
 
 
 def test_config_round_trip(tmp_path):

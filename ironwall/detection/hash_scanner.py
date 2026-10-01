@@ -7,6 +7,8 @@ from pathlib import Path
 
 from ironwall.utils.paths import rules_dir
 
+EICAR_SHA256 = "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f"
+# The canonical EICAR content is checked directly, since harmless text editors may add a newline.
 EICAR_MARKER = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 
 
