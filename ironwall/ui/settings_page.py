@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ironwall import __version__
 from ironwall.core.config import Settings
 from ironwall.detection.scanner import ScanningEngine
 
@@ -32,6 +33,7 @@ class SettingsPage(QWidget):
         self.engine = engine
 
         form = QFormLayout(self)
+        form.addRow("Version", QLabel(f"Alpha v{__version__.removesuffix('-alpha')}"))
         self.realtime = QCheckBox()
         self.realtime.setChecked(settings.realtime_enabled)
         self.temp = QCheckBox()

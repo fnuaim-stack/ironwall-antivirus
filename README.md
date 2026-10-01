@@ -1,5 +1,7 @@
 # IronWall Antivirus
 
+Current preview: Alpha v1.0.0 (`v1.0.0-alpha`).
+
 IronWall Antivirus is an educational Windows-focused antivirus and endpoint-monitoring application. It provides local on-demand scanning, explainable heuristic checks, EICAR detection, SQLite-backed events, and safe quarantine/restore workflows. It is not a replacement for Windows Defender or an enterprise endpoint security product.
 
 ## Features
