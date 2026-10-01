@@ -1,53 +1,50 @@
 # IronWall Antivirus
 
-Current preview: Alpha v1.0.0 (`v1.0.0-alpha`).
+**Current release: Alpha v1.0.0**
 
-IronWall Antivirus is an educational Windows-focused antivirus and endpoint-monitoring application. It provides local on-demand scanning, explainable heuristic checks, EICAR detection, SQLite-backed events, and safe quarantine/restore workflows. It is not a replacement for Windows Defender or an enterprise endpoint security product.
+IronWall Antivirus is a Windows antivirus and endpoint-monitoring project built for learning and testing. It can scan files, monitor changes, detect test threats, quarantine files, and show security events.
 
 ## Features
 
-- SHA-256 local rule scanning, standard EICAR recognition, and published WannaCry sample hashes
-- Persistent user hash/YARA rules and optional local ClamAV signature scanning
-- Explainable double-extension, temporary-directory, startup-script, and PE static heuristics
-- Optional YARA provider and static PE metadata/heuristics
-- On-demand quick, folder, and single-file scans in a background thread
-- Quarantine, restore, and permanent-delete backend operations
-- Real-time watchdog file monitoring and psutil process-monitoring services
-- PySide6 desktop interface with dashboard, scanning, protection, quarantine, events, and persistent settings
+- Quick, folder, and single-file scans
+- SHA-256, heuristic, PE, YARA, and optional ClamAV checks
+- Real-time file and process monitoring
+- Quarantine and restore
+- Security events and simple desktop UI
 
-## Run
+## Download
 
-On Windows with Python 3.11+:
+Download **IronWall-Antivirus.exe** from the GitHub Releases page and run it on Windows.
+
+The EXE is currently unsigned, so Windows may show a SmartScreen warning.
+
+## Run from source
+
+Requires Python 3.11+:
 
 ```powershell
 py -m pip install -r requirements.txt
-# Optional YARA provider:
-py -m pip install -r requirements-yara.txt
 py -m ironwall.main
 ```
 
-Alternatively, run `scripts\setup_windows.ps1 -Launch` to create a virtual environment, install dependencies, and start IronWall.
+## Test in Windows Sandbox
 
-User data, logs, settings, and quarantine files are stored in `%LOCALAPPDATA%\IronWall`.
+1. Enable **Windows Sandbox** in Windows Features and restart if needed.
+2. Create `C:\IronWallSandbox`.
+3. Put these files inside it:
+   - `IronWall-Antivirus.exe`
+   - `sandbox\IronWall-Isolated.wsb`
+   - `sandbox\create_test_samples.ps1`
+4. Double-click `IronWall-Isolated.wsb`.
+5. In Sandbox, copy the EXE from the mapped **IronWall** folder to the Desktop and run it.
+6. Follow the short test steps in [sandbox/README.md](sandbox/README.md).
+
+Keep Windows Defender enabled. The included samples are harmless test fixtures.
 
 ## Build
 
-Run `scripts\build_windows.ps1`. The committed PyInstaller spec produces `dist\IronWall-Antivirus.exe`.
-The build script also runs a non-interactive startup smoke test against the packaged executable.
-Successful GitHub Actions runs publish the EXE as the `IronWall-Antivirus-Windows` artifact for 14 days.
-
-## Tests
-
 ```powershell
-py -m pytest tests -q
+scripts\build_windows.ps1
 ```
 
-YARA is optional at runtime. If `yara-python` cannot be installed, IronWall continues with hash, heuristic, and PE scanning and reports YARA as unavailable in Settings. The local database detects the listed exact WannaCry samples by SHA-256, and the conservative YARA rule can detect related files carrying several known static indicators. This is useful portfolio-grade protection, not a guarantee against every WannaCry variant or malware family.
-
-For broader local signatures, install ClamAV for Windows, update its signature database, and put `clamscan.exe` on `PATH` before starting IronWall. Alternatively set `IRONWALL_CLAMSCAN_PATH` to its full path. Settings shows whether the provider is available. A ClamAV failure is reported as a scan error, not a clean verdict. Additional reviewed rules can be placed in `%LOCALAPPDATA%\IronWall\Rules\hashes.json` and `%LOCALAPPDATA%\IronWall\Rules\yara\`; see [rules/README.md](rules/README.md).
-
-IronWall scans files after they appear or change. It cannot stop an already running ransomware process before encryption, and it does not replace Windows Defender. For live samples, use a disposable VM with no host shares or network access; do not rely on the Sandbox fixture configuration as containment for executing malware.
-
-## Testing in Windows Sandbox
-
-See [sandbox/README.md](sandbox/README.md) for an isolated, repeatable checklist using EICAR and a harmless WannaCry signature fixture. Keep Windows Defender enabled.
+IronWall is an educational project and does not replace Windows Defender or an enterprise antivirus product.
