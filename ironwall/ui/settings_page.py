@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from ironwall.core.config import Settings
+from ironwall.detection.scanner import ScanningEngine
 
 
 class SettingsPage(QWidget):
@@ -23,11 +24,12 @@ class SettingsPage(QWidget):
         self,
         settings: Settings,
         apply_settings: Callable[..., None],
-        yara_available: bool,
+        engine: ScanningEngine,
     ) -> None:
         super().__init__()
         self.settings = settings
         self.apply_settings = apply_settings
+        self.engine = engine
 
         form = QFormLayout(self)
         self.realtime = QCheckBox()
@@ -38,7 +40,7 @@ class SettingsPage(QWidget):
         self.heuristic.setChecked(settings.heuristics_enabled)
         self.yara = QCheckBox()
         self.yara.setChecked(settings.yara_enabled)
-        self.yara.setEnabled(yara_available)
+        self.yara.setEnabled(engine.yara.available)
         self.maximum = QSpinBox()
         self.maximum.setRange(1, 4096)
         self.maximum.setValue(settings.maximum_file_size_mb)
@@ -61,15 +63,32 @@ class SettingsPage(QWidget):
             ("Quarantine location", quarantine_row),
         ):
             form.addRow(name, widget)
-        provider = (
-            "Available" if yara_available else "Unavailable (install yara-python)"
-        )
-        form.addRow("YARA provider", QLabel(provider))
+        self.provider = QLabel()
+        self.clamav_provider = QLabel()
+        self.rule_status = QLabel()
+        form.addRow("YARA provider", self.provider)
+        form.addRow("ClamAV provider", self.clamav_provider)
+        form.addRow("Local hash rules", QLabel(str(engine.hash_scanner.user_database_path)))
+        form.addRow("Local YARA rules", QLabel(str(engine.yara.user_rule_directory)))
+        form.addRow("Rule load status", self.rule_status)
         save = QPushButton("Save settings")
         save.clicked.connect(self.persist)
         form.addRow(save)
+        self.refresh_from_settings()
 
     def refresh_from_settings(self) -> None:
+        self.engine.hash_scanner.refresh()
+        self.engine.yara.refresh()
+        self.provider.setText(
+            "Available" if self.engine.yara.available else "Unavailable (install yara-python)"
+        )
+        self.clamav_provider.setText(
+            "Executable found (requires an updated signature database)"
+            if self.engine.clamav.available
+            else "Unavailable (install ClamAV and update its database)"
+        )
+        errors = self.engine.hash_scanner.errors + self.engine.yara.errors
+        self.rule_status.setText("; ".join(errors) if errors else "Ready")
         self.realtime.setChecked(self.settings.realtime_enabled)
         self.temp.setChecked(self.settings.scan_temporary_files)
         self.heuristic.setChecked(self.settings.heuristics_enabled)

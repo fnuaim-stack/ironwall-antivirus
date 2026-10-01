@@ -65,7 +65,7 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage(
             self.settings,
             self.apply_settings,
-            self.engine.yara.available,
+            self.engine,
         )
 
         page_entries = (

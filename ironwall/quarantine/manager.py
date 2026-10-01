@@ -41,8 +41,13 @@ class QuarantineManager:
         destination = (self.location / entry_id).resolve()
         if destination.parent != self.location:
             raise ValueError("Invalid quarantine path")
-        digest = result.sha256 or sha256_file(source)
+        digest = sha256_file(source)
+        if result.sha256 and digest.lower() != result.sha256.lower():
+            raise ValueError("File changed since it was scanned; scan it again before quarantine")
         shutil.move(str(source), str(destination))
+        if sha256_file(destination) != digest:
+            shutil.move(str(destination), str(source))
+            raise ValueError("File changed during quarantine; no entry was created")
         entry = {
             "id": entry_id,
             "created_at": datetime.now(timezone.utc).isoformat(),

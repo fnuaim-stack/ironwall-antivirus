@@ -72,3 +72,18 @@ def test_quarantine_rejects_symbolic_link(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Symbolic"):
         manager.quarantine(detected_result(link))
+
+
+def test_quarantine_rejects_file_changed_since_scan(tmp_path: Path) -> None:
+    source = tmp_path / "sample.bin"
+    source.write_bytes(b"original")
+    database = Database(tmp_path / "database.sqlite")
+    manager = QuarantineManager(database, tmp_path / "quarantine")
+    result = detected_result(source)
+    source.write_bytes(b"changed")
+
+    with pytest.raises(ValueError, match="changed since it was scanned"):
+        manager.quarantine(result)
+
+    assert source.read_bytes() == b"changed"
+    assert database.quarantine_entries() == []
