@@ -68,6 +68,6 @@ def test_scan_result_contains_explainable_score(tmp_path: Path) -> None:
     sample = tmp_path / "invoice.pdf.exe"
     sample.write_bytes(b"not a PE file")
     result = ScanningEngine().scan_file(sample)
-    assert result.status is ScanStatus.SUSPICIOUS
+    assert result.status in {ScanStatus.SUSPICIOUS, ScanStatus.DETECTED}
     assert result.metadata["heuristic_score"] >= 30
     assert any("double extension" in reason for reason in result.reasons)

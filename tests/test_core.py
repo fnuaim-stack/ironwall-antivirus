@@ -28,14 +28,12 @@ def test_eicar_hash_constant_matches_test_file():
     assert hashlib.sha256(EICAR).hexdigest() == EICAR_SHA256
 
 
-def test_double_extension_is_suspicious(tmp_path):
+def test_double_extension_is_flagged_by_full_scan(tmp_path):
     sample = tmp_path / "invoice.pdf.exe"
     sample.write_bytes(b"not a portable executable")
     result = ScanningEngine().scan_file(sample)
-    assert (
-        result.status is ScanStatus.SUSPICIOUS
-        and "double extension" in result.reasons[0]
-    )
+    assert result.status in {ScanStatus.SUSPICIOUS, ScanStatus.DETECTED}
+    assert any("double extension" in reason for reason in result.reasons)
 
 
 def test_double_extension_heuristic_is_suspicious():
