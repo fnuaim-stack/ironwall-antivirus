@@ -8,4 +8,6 @@ IronWall ships a small, reviewable local rule set:
 
 The source URL for every malware hash is stored with the entry. The WannaCry YARA metadata links to the public rules used to validate its indicators. Rules contain no malware bytes and scanning never executes a target.
 
-Hash rules reload when `hashes.json` changes. YARA is an optional provider; packaged Windows builds include `yara-python`, while source installations continue to work without it.
+Add reviewed indicators to `%LOCALAPPDATA%\IronWall\Rules\hashes.json` using the same JSON schema as the bundled file. Put local `.yar` or `.yara` files in `%LOCALAPPDATA%\IronWall\Rules\yara\`, including subfolders if useful. Both providers reload changed rules without restarting the application. Settings displays rule load errors; a broken local YARA file does not disable other rules. User rules and quarantine data are outside the packaged EXE.
+
+YARA is an optional provider; packaged Windows builds include `yara-python`, while source installations continue to work without it. ClamAV can be installed separately for a larger local malware signature database.

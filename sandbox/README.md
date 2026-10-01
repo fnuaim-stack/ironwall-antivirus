@@ -22,3 +22,5 @@
 For source testing with Sandbox networking enabled, copy the repository and run `scripts\setup_windows.ps1 -Launch` instead. The setup script installs the optional YARA provider when a compatible wheel is available.
 
 Windows Defender may independently remove EICAR before IronWall opens it; that is expected. Do not disable Defender. Do not download or execute WannaCry or any other live malware for this checklist. The included WannaCry fixture is non-executable test data containing signature strings only.
+
+This `.wsb` template maps a host folder read-only and is intended for inert fixtures and application checks. For live malware work, use a disposable VM with no host folder mapping, no shared clipboard, and no network connection. IronWall observes files and processes in user mode; it does not prevent execution or encryption by a fast moving sample.

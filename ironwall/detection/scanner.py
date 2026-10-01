@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ironwall.core.models import ScanResult, ScanStatus
 
+from .clamav_scanner import ClamAVScanner
 from .hash_scanner import HashScanner, sha256_file
 from .heuristic_scanner import HeuristicScanner
 from .pe_scanner import PEScanner
@@ -31,8 +32,9 @@ class ScanningEngine:
             PEScanner(),
             YaraScanner(),
         )
+        self.clamav = ClamAVScanner()
         self.cache_size = max(0, cache_size)
-        self._cache: OrderedDict[tuple[str, int, int, int], ScanResult] = OrderedDict()
+        self._cache: OrderedDict[tuple, ScanResult] = OrderedDict()
         self._cache_lock = threading.RLock()
 
     def scan_file(self, file_path: str | Path) -> ScanResult:
@@ -52,18 +54,22 @@ class ScanningEngine:
                     ],
                     duration=started,
                 )
-            try:
-                rules_mtime = self.hash_scanner.database_path.stat().st_mtime_ns
-            except OSError:
-                rules_mtime = -1
+            rule_revisions = (
+                self.hash_scanner.revision(),
+                self.yara.revision() if self.yara_enabled else (),
+            )
             cache_key = (
                 str(path.resolve()),
                 stat.st_size,
                 stat.st_mtime_ns,
-                rules_mtime,
+                stat.st_ctime_ns,
+                stat.st_dev,
+                stat.st_ino,
+                rule_revisions,
             )
             with self._cache_lock:
-                cached = self._cache.get(cache_key)
+                # ClamAV signatures can update independently of IronWall files.
+                cached = None if self.clamav.available else self._cache.get(cache_key)
                 if cached is not None:
                     self._cache.move_to_end(cache_key)
                     return replace(
@@ -85,7 +91,7 @@ class ScanningEngine:
                     ["hash"],
                     started,
                 )
-                return self._remember(cache_key, result)
+                return self._finish(path, stat, rule_revisions, cache_key, result)
             score, reasons, scanners = 0, [], []
             if self.heuristics_enabled:
                 points, notes = self.heuristic.scan(path)
@@ -124,7 +130,22 @@ class ScanningEngine:
                         started,
                         {"yara_matches": matches, "pe": pe_details},
                     )
-                    return self._remember(cache_key, result)
+                    return self._finish(path, stat, rule_revisions, cache_key, result)
+            if self.clamav.available:
+                signature = self.clamav.scan(path)
+                if signature:
+                    result = self._result(
+                        path,
+                        ScanStatus.DETECTED,
+                        stat.st_size,
+                        digest,
+                        signature,
+                        "High",
+                        [f"ClamAV local signature matched: {signature}"],
+                        ["clamav"],
+                        started,
+                    )
+                    return self._finish(path, stat, rule_revisions, cache_key, result)
             status = (
                 ScanStatus.DETECTED
                 if score >= 60
@@ -132,6 +153,13 @@ class ScanningEngine:
                 if score >= 30
                 else ScanStatus.CLEAN
             )
+            provider_errors = self.hash_scanner.errors + (
+                self.yara.errors if self.yara_enabled else []
+            )
+            if provider_errors:
+                reasons += [f"Rule provider error: {message}" for message in provider_errors]
+                if status == ScanStatus.CLEAN:
+                    status = ScanStatus.ERROR
             result = self._result(
                 path,
                 status,
@@ -142,13 +170,15 @@ class ScanningEngine:
                 if status == ScanStatus.DETECTED
                 else "Medium"
                 if status == ScanStatus.SUSPICIOUS
+                else "Error"
+                if status == ScanStatus.ERROR
                 else "Info",
                 reasons,
                 scanners,
                 started,
                 {"heuristic_score": score, "pe": pe_details},
             )
-            return self._remember(cache_key, result)
+            return self._finish(path, stat, rule_revisions, cache_key, result)
         except Exception as exc:  # noqa: BLE001 - scanner boundary must return ERROR
             return ScanResult(
                 path=str(path),
@@ -158,11 +188,39 @@ class ScanningEngine:
                 duration_ms=(time.perf_counter() - started) * 1000,
             )
 
-    def _remember(
-        self, key: tuple[str, int, int, int], result: ScanResult
+    def _finish(
+        self,
+        path: Path,
+        initial_stat,
+        rule_revisions: tuple,
+        key: tuple,
+        result: ScanResult,
     ) -> ScanResult:
+        try:
+            current = path.stat()
+            changed = (
+                current.st_size != initial_stat.st_size
+                or current.st_mtime_ns != initial_stat.st_mtime_ns
+                or current.st_ctime_ns != initial_stat.st_ctime_ns
+                or current.st_dev != initial_stat.st_dev
+                or current.st_ino != initial_stat.st_ino
+                or self.hash_scanner.revision() != rule_revisions[0]
+                or (self.yara_enabled and self.yara.revision() != rule_revisions[1])
+            )
+        except OSError:
+            changed = True
+        if changed:
+            return ScanResult(
+                path=str(path),
+                status=ScanStatus.ERROR,
+                severity="Error",
+                reasons=["File or detection rules changed during scanning; retry the scan"],
+            )
+        return self._remember(key, result)
+
+    def _remember(self, key: tuple, result: ScanResult) -> ScanResult:
         with self._cache_lock:
-            if self.cache_size:
+            if self.cache_size and not self.clamav.available:
                 self._cache[key] = result
                 self._cache.move_to_end(key)
                 while len(self._cache) > self.cache_size:

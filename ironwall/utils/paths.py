@@ -30,3 +30,8 @@ def rules_dir() -> Path:
     if getattr(__import__("sys"), "frozen", False):
         return Path(__import__("sys")._MEIPASS) / "rules"  # type: ignore[attr-defined]
     return Path(__file__).resolve().parents[2] / "rules"
+
+
+def user_rules_dir() -> Path:
+    """Rules maintained by the user survive upgrades and one-file extraction."""
+    return app_data_dir() / "Rules"

@@ -134,3 +134,88 @@ def test_engine_uses_yara_threat_metadata(tmp_path: Path, monkeypatch) -> None:
     assert result.threat_name == "Ransom.Win32.Test"
     assert result.severity == "Critical"
     assert "$one" in result.reasons[0]
+
+
+def test_user_hash_rules_reload_and_keep_bundled_rules(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"local known sample")
+    bundled = tmp_path / "bundled.json"
+    bundled.write_text('{"hashes": []}', encoding="utf-8")
+    user = tmp_path / "user.json"
+    scanner = HashScanner(bundled, user)
+    assert scanner.scan(sample) is None
+
+    user.write_text(
+        json.dumps(
+            {
+                "hashes": [
+                    {
+                        "hash": sha256_file(sample),
+                        "threat_name": "Local.Known.Sample",
+                        "severity": "High",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert scanner.scan(sample)["threat_name"] == "Local.Known.Sample"
+    user.write_text("not JSON", encoding="utf-8")
+    assert scanner.scan(sample) is None
+    assert scanner.errors
+
+
+def test_user_yara_rules_reload_and_invalid_rule_isolated(tmp_path: Path) -> None:
+    pytest.importorskip("yara")
+    bundled = tmp_path / "bundled"
+    bundled.mkdir()
+    local = tmp_path / "local"
+    local.mkdir()
+    (bundled / "base.yar").write_text(
+        'rule Base { strings: $a = "BASE_MARKER" condition: $a }', encoding="utf-8"
+    )
+    scanner = YaraScanner(bundled, local)
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"BASE_MARKER LOCAL_MARKER")
+    assert {match["rule"] for match in scanner.scan(sample)} == {"Base"}
+
+    (local / "local.yar").write_text(
+        'rule Local { strings: $a = "LOCAL_MARKER" condition: $a }', encoding="utf-8"
+    )
+    assert {match["rule"] for match in scanner.scan(sample)} == {"Base", "Local"}
+    (local / "broken.yar").write_text("rule Broken {", encoding="utf-8")
+    assert {match["rule"] for match in scanner.scan(sample)} == {"Base", "Local"}
+    assert scanner.errors and "broken.yar" in scanner.errors[0]
+
+
+def test_file_changed_while_scanning_is_not_reported_clean(
+    tmp_path: Path, monkeypatch
+) -> None:
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"original")
+    engine = ScanningEngine()
+
+    def mutate(_path):
+        sample.write_bytes(b"changed content")
+        return 0, []
+
+    monkeypatch.setattr(engine.heuristic, "scan", mutate)
+    result = engine.scan_file(sample)
+    assert result.status is ScanStatus.ERROR
+    assert "changed during scanning" in result.reasons[0]
+
+
+def test_invalid_local_rules_do_not_produce_clean_verdict(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"ordinary content")
+    bundled = tmp_path / "bundled.json"
+    bundled.write_text('{"hashes": []}', encoding="utf-8")
+    user = tmp_path / "user.json"
+    user.write_text("invalid JSON", encoding="utf-8")
+    engine = ScanningEngine()
+    engine.hash_scanner = HashScanner(bundled, user)
+    engine.clamav.available = False
+
+    result = engine.scan_file(sample)
+    assert result.status is ScanStatus.ERROR
+    assert any("Rule provider error" in reason for reason in result.reasons)
