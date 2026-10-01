@@ -1,112 +1,180 @@
 from __future__ import annotations
 
-import threading
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from PySide6.QtCore import Qt, Signal, QObject
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QListWidget)
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QListWidget,
+    QMainWindow,
+    QStackedWidget,
+    QWidget,
+)
 
 from ironwall.core.config import ConfigManager
-from ironwall.core.models import ScanResult, ScanStatus
 from ironwall.detection.scanner import ScanningEngine
-from ironwall.monitoring.file_monitor import FileMonitor
-from ironwall.monitoring.process_monitor import ProcessMonitor
 from ironwall.quarantine.manager import QuarantineManager
 from ironwall.services.scan_service import ScanService
 from ironwall.storage.database import Database
-
-
-class Signals(QObject):
-    result = Signal(object)
-    complete = Signal(dict)
-
-
-class ProtectionSignals(QObject):
-    detection = Signal(object)
-
-
-class ScanPage(QWidget):
-    def __init__(self, service: ScanService, quarantine: QuarantineManager) -> None:
-        super().__init__(); self.service, self.quarantine, self.signals = service, quarantine, Signals(); self.results: list[ScanResult] = []
-        layout = QVBoxLayout(self); controls = QHBoxLayout()
-        for label, callback in (("Quick Scan", self.quick), ("Custom Folder", self.folder), ("Scan File", self.file), ("Stop Scan", self.service.stop)):
-            button = QPushButton(label); button.clicked.connect(callback); controls.addWidget(button)
-        layout.addLayout(controls); self.status = QLabel("Ready"); layout.addWidget(self.status)
-        self.table = QTableWidget(0, 5); self.table.setHorizontalHeaderLabels(["Status", "File", "Threat", "Reason", "Action"]); layout.addWidget(self.table)
-        self.signals.result.connect(self.add_result); self.signals.complete.connect(lambda total: self.status.setText(f"Completed: {total['files_scanned']} files, {total['detections']} detections"))
-    def _run(self, paths):
-        self.results.clear(); self.table.setRowCount(0); self.status.setText("Scanning…")
-        threading.Thread(target=lambda: self.signals.complete.emit(self.service.scan_paths(paths, self.signals.result.emit)), daemon=True).start()
-    def quick(self): self._run(self.service.quick_scan_paths())
-    def folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Select folder")
-        if path: self._run([Path(path)])
-    def file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select file")
-        if path: self._run([Path(path)])
-    def add_result(self, result: ScanResult):
-        row=self.table.rowCount(); self.table.insertRow(row); self.results.append(result)
-        display_status = "SKIPPED" if any(reason.startswith("Skipped:") for reason in result.reasons) else result.status.value
-        for col, text in enumerate((display_status, result.file_name, result.threat_name or "—", "; ".join(result.reasons) or "—")):
-            self.table.setItem(row,col,QTableWidgetItem(text))
-        if result.status in {ScanStatus.DETECTED, ScanStatus.SUSPICIOUS}:
-            button=QPushButton("Quarantine"); button.clicked.connect(lambda _, r=result: self._quarantine(r)); self.table.setCellWidget(row,4,button)
-    def _quarantine(self, result):
-        try: self.quarantine.quarantine(result); QMessageBox.information(self,"IronWall",f"Quarantined {result.file_name}")
-        except Exception as exc: QMessageBox.warning(self,"IronWall",f"Could not quarantine file: {exc}")
-
-
-class EventsPage(QWidget):
-    def __init__(self, database: Database) -> None:
-        super().__init__(); self.database=database; layout=QVBoxLayout(self); refresh=QPushButton("Refresh"); refresh.clicked.connect(self.refresh); layout.addWidget(refresh); self.table=QTableWidget(0,5); self.table.setHorizontalHeaderLabels(["Time","Type","Severity","Message","Subject"]); layout.addWidget(self.table); self.refresh()
-    def refresh(self):
-        events=self.database.events(); self.table.setRowCount(len(events))
-        for row,event in enumerate(events):
-            for col,key in enumerate(("timestamp","event_type","severity","message","subject")): self.table.setItem(row,col,QTableWidgetItem(str(event.get(key) or "")))
-
-
-class QuarantinePage(QWidget):
-    def __init__(self, manager: QuarantineManager, database: Database) -> None:
-        super().__init__(); self.manager,self.database=manager,database; layout=QVBoxLayout(self); refresh=QPushButton("Refresh"); refresh.clicked.connect(self.refresh); layout.addWidget(refresh); self.table=QTableWidget(0,5); self.table.setHorizontalHeaderLabels(["Date","File","Threat","Original Path","Action"]); layout.addWidget(self.table); self.refresh()
-    def refresh(self):
-        entries=self.database.quarantine_entries(); self.table.setRowCount(len(entries))
-        for row,e in enumerate(entries):
-            for col,key in enumerate(("created_at","id","threat_name","original_path")): self.table.setItem(row,col,QTableWidgetItem(str(e[key])))
-            button=QPushButton("Restore"); button.clicked.connect(lambda _, id=e['id']: self.restore(id)); self.table.setCellWidget(row,4,button)
-    def restore(self, entry_id):
-        try: self.manager.restore(entry_id); self.refresh()
-        except Exception as exc: QMessageBox.warning(self,"IronWall",f"Restore failed: {exc}")
-
-
-class ProtectionPage(QWidget):
-    def __init__(self, engine, database, settings, config_manager) -> None:
-        super().__init__(); self.engine, self.database, self.settings, self.config_manager = engine, database, settings, config_manager
-        self.signals = ProtectionSignals(); self.signals.detection.connect(self.detected)
-        self.file_monitor = FileMonitor(engine, database, self.signals.detection.emit); self.process_monitor = ProcessMonitor(engine, database)
-        layout=QVBoxLayout(self); layout.addWidget(QLabel("<h2>Real-Time Protection</h2>")); self.state=QLabel("Protection disabled")
-        layout.addWidget(self.state); self.folders=QLabel("Monitored folders:\n" + "\n".join(settings.monitored_directories or ["No accessible default folders found"]))
-        layout.addWidget(self.folders); buttons=QHBoxLayout(); start=QPushButton("Enable Protection"); stop=QPushButton("Disable Protection"); start.clicked.connect(self.start); stop.clicked.connect(self.stop); buttons.addWidget(start); buttons.addWidget(stop); layout.addLayout(buttons); layout.addStretch()
-    def start(self):
-        errors=self.file_monitor.start(self.settings.monitored_directories); self.process_monitor.start(); self.settings.realtime_enabled=True; self.config_manager.save(self.settings)
-        self.state.setText("Protection enabled" + (" — " + "; ".join(errors) if errors else ""))
-    def stop(self):
-        self.file_monitor.stop(); self.process_monitor.stop(); self.settings.realtime_enabled=False; self.config_manager.save(self.settings); self.state.setText("Protection disabled")
-    def detected(self, result):
-        self.state.setText(f"Detection: {result.threat_name} in {result.file_name}")
+from ironwall.ui.dashboard import DashboardPage
+from ironwall.ui.events_page import EventsPage
+from ironwall.ui.protection_page import ProtectionPage
+from ironwall.ui.quarantine_page import QuarantinePage
+from ironwall.ui.scanner_page import ScanPage
+from ironwall.ui.settings_page import SettingsPage
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
-        super().__init__(); self.setWindowTitle("IronWall Antivirus"); self.resize(1050, 650)
-        config_manager=ConfigManager(); settings=config_manager.load(); database=Database(); engine=ScanningEngine(settings.maximum_file_size_mb, settings.heuristics_enabled, settings.yara_enabled); quarantine=QuarantineManager(database, Path(settings.quarantine_location))
-        pages=QStackedWidget(); scan=ScanPage(ScanService(engine,database),quarantine)
-        dashboard=QWidget(); d=QVBoxLayout(dashboard); d.addWidget(QLabel("<h1>IronWall Antivirus</h1><h3>Protection status: local monitoring available</h3><p>Educational endpoint monitoring. It complements, not replaces, Windows Defender.</p>")); quick=QPushButton("Start Quick Scan"); quick.clicked.connect(lambda: pages.setCurrentWidget(scan)); d.addWidget(quick); d.addStretch()
-        protection=ProtectionPage(engine, database, settings, config_manager)
-        settings_page=QWidget(); s=QVBoxLayout(settings_page); s.addWidget(QLabel("<h2>Settings</h2><p>Settings are stored under your local IronWall application-data folder.</p>")); s.addStretch()
-        items=[("Dashboard",dashboard),("Scan",scan),("Real-Time Protection",protection),("Quarantine",QuarantinePage(quarantine,database)),("Security Events",EventsPage(database)),("Settings",settings_page)]
-        sidebar=QListWidget(); sidebar.addItems([x[0] for x in items]); [pages.addWidget(x[1]) for x in items]; sidebar.currentRowChanged.connect(pages.setCurrentIndex); sidebar.setCurrentRow(0)
-        container=QWidget(); layout=QHBoxLayout(container); layout.addWidget(sidebar,1); layout.addWidget(pages,5); self.setCentralWidget(container)
+        super().__init__()
+        self.setWindowTitle("IronWall Antivirus")
+        self.resize(1100, 700)
+
+        self.config = ConfigManager()
+        self.settings = self.config.load()
+        self.database = Database()
+        self.engine = ScanningEngine(
+            self.settings.maximum_file_size_mb,
+            self.settings.heuristics_enabled,
+            self.settings.yara_enabled,
+        )
+        self.quarantine = QuarantineManager(
+            self.database, Path(self.settings.quarantine_location)
+        )
+        self.scan_service = ScanService(
+            self.engine,
+            self.database,
+            self.settings.scan_temporary_files,
+        )
+
+        self.pages = QStackedWidget()
+        self.scan_page = ScanPage(self.scan_service, self.quarantine)
+        self.protection_page = ProtectionPage(
+            self.engine,
+            self.database,
+            self.settings,
+            self.quarantine,
+            self._save_config,
+        )
+        self.dashboard_page = DashboardPage(
+            self.database, self.settings, self._quick_scan
+        )
+        self.quarantine_page = QuarantinePage(self.quarantine, self.database)
+        self.events_page = EventsPage(self.database)
+        self.settings_page = SettingsPage(
+            self.settings,
+            self.apply_settings,
+            self.engine.yara.available,
+        )
+
+        page_entries = (
+            ("Dashboard", self.dashboard_page),
+            ("Scan", self.scan_page),
+            ("Real-Time Protection", self.protection_page),
+            ("Quarantine", self.quarantine_page),
+            ("Security Events", self.events_page),
+            ("Settings", self.settings_page),
+        )
+        self.sidebar = QListWidget()
+        self.sidebar.addItems([name for name, _ in page_entries])
+        for _, page in page_entries:
+            self.pages.addWidget(page)
+        self.sidebar.currentRowChanged.connect(self._show_page)
+        self.sidebar.setCurrentRow(0)
+
+        root = QWidget()
+        layout = QHBoxLayout(root)
+        layout.addWidget(self.sidebar, 1)
+        layout.addWidget(self.pages, 5)
+        self.setCentralWidget(root)
+
+        if self.settings.realtime_enabled:
+            self.protection_page.start()
+
+    def _save_config(self) -> None:
+        self.config.save(self.settings)
+
+    def _quick_scan(self) -> None:
+        self.pages.setCurrentWidget(self.scan_page)
+        self.sidebar.setCurrentRow(self.pages.indexOf(self.scan_page))
+        self.scan_page.quick()
+
+    def _show_page(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        page = self.pages.widget(index)
+        if page is self.dashboard_page:
+            self.dashboard_page.refresh()
+        elif page is self.quarantine_page:
+            self.quarantine_page.refresh()
+        elif page is self.events_page:
+            self.events_page.refresh()
+        elif page is self.settings_page:
+            self.settings_page.refresh_from_settings()
+
+    def apply_settings(
+        self,
+        *,
+        realtime_enabled: bool,
+        scan_temporary_files: bool,
+        heuristics_enabled: bool,
+        yara_enabled: bool,
+        maximum_file_size_mb: int,
+        quarantine_location: str,
+    ) -> None:
+        new_location = Path(quarantine_location)
+        self.quarantine.change_location(new_location)
+
+        self.settings.scan_temporary_files = scan_temporary_files
+        self.settings.heuristics_enabled = heuristics_enabled
+        self.settings.yara_enabled = yara_enabled
+        self.settings.maximum_file_size_mb = maximum_file_size_mb
+        self.settings.quarantine_location = str(self.quarantine.location)
+        self.engine.maximum_bytes = maximum_file_size_mb * 1024 * 1024
+        self.engine.heuristics_enabled = heuristics_enabled
+        self.engine.yara_enabled = yara_enabled
+        self.engine.clear_cache()
+        self.scan_service.scan_temporary_files = scan_temporary_files
+
+        if realtime_enabled and not self.settings.realtime_enabled:
+            self.protection_page.start()
+        elif not realtime_enabled and self.settings.realtime_enabled:
+            self.protection_page.stop()
+        else:
+            self.settings.realtime_enabled = realtime_enabled
+            self._save_config()
+
+    def closeEvent(self, event) -> None:
+        self.scan_service.stop()
+        self.protection_page.shutdown()
+        event.accept()
 
 
 def run() -> int:
-    app=QApplication.instance() or QApplication([]); window=MainWindow(); window.show(); return app.exec()
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    window.show()
+    return app.exec()
+
+
+def smoke_test() -> int:
+    """Construct every page without touching the user's persistent data."""
+    import os
+
+    previous_data_directory = os.environ.get("IRONWALL_DATA_DIR")
+    try:
+        with TemporaryDirectory(prefix="ironwall-smoke-") as data_directory:
+            os.environ["IRONWALL_DATA_DIR"] = data_directory
+            app = QApplication.instance() or QApplication([])
+            window = MainWindow()
+            app.processEvents()
+            if window.pages.count() != 6:
+                return 1
+            window.close()
+            app.processEvents()
+    finally:
+        if previous_data_directory is None:
+            os.environ.pop("IRONWALL_DATA_DIR", None)
+        else:
+            os.environ["IRONWALL_DATA_DIR"] = previous_data_directory
+    return 0

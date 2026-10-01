@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 from ironwall.utils.paths import rules_dir
@@ -19,6 +20,18 @@ def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def contains_eicar(path: Path, chunk_size: int = 64 * 1024) -> bool:
+    """Find the harmless EICAR marker without loading the entire file."""
+    overlap = b""
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            data = overlap + chunk
+            if EICAR_MARKER in data:
+                return True
+            overlap = data[-(len(EICAR_MARKER) - 1) :]
+    return False
+
+
 class HashScanner:
     name = "hash"
 
@@ -26,28 +39,39 @@ class HashScanner:
         self.database_path = database_path or rules_dir() / "hashes.json"
         self._mtime: float | None = None
         self._hashes: dict[str, dict] = {}
+        self._lock = threading.RLock()
 
     def _load(self) -> None:
-        try:
-            mtime = self.database_path.stat().st_mtime
-            if mtime == self._mtime:
-                return
-            data = json.loads(self.database_path.read_text(encoding="utf-8"))
-            entries = data.get("hashes", data) if isinstance(data, dict) else data
-            self._hashes = {entry["hash"].lower(): entry for entry in entries}
-            self._mtime = mtime
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
-            self._hashes, self._mtime = {}, None
+        with self._lock:
+            try:
+                mtime = self.database_path.stat().st_mtime
+                if mtime == self._mtime:
+                    return
+                data = json.loads(self.database_path.read_text(encoding="utf-8"))
+                entries = data.get("hashes", data) if isinstance(data, dict) else data
+                self._hashes = {
+                    entry["hash"].lower(): entry
+                    for entry in entries
+                    if isinstance(entry, dict)
+                    and isinstance(entry.get("hash"), str)
+                    and len(entry["hash"]) == 64
+                }
+                self._mtime = mtime
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                self._hashes, self._mtime = {}, None
 
     def scan(self, path: Path, sha256: str | None = None) -> dict | None:
         self._load()
         digest = sha256 or sha256_file(path)
-        entry = self._hashes.get(digest.lower())
+        with self._lock:
+            entry = self._hashes.get(digest.lower())
         if entry:
             return {**entry, "sha256": digest}
-        try:
-            if EICAR_MARKER in path.read_bytes():
-                return {"threat_name": "EICAR-Test-File", "severity": "Test/High", "description": "Harmless standard antivirus test file.", "sha256": digest}
-        except OSError:
-            pass
+        if contains_eicar(path):
+            return {
+                "threat_name": "EICAR-Test-File",
+                "severity": "Test/High",
+                "description": "Harmless standard antivirus test file.",
+                "sha256": digest,
+            }
         return None
